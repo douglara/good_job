@@ -28,7 +28,7 @@ def make_seed(jobs, queues)
   end
 end
 
-def run_default_order
+def run_default_order_until_last_queue
   current_queue_name = ""
   while current_queue_name != "queue_#{@queues}" do
     GoodJob::Job.unfinished.priority_ordered.only_scheduled.limit(1).with_advisory_lock(unlock_session: true) do |good_jobs|
@@ -38,7 +38,7 @@ def run_default_order
   end
 end
 
-def run_queue_random_order
+def run_queue_random_order_until_last_queue
   current_queue_name = ""
   while current_queue_name != "queue_#{@queues}" do
     GoodJob::Job.unfinished.queue_random_order.priority_ordered.only_scheduled.limit(1).with_advisory_lock(unlock_session: true) do |good_jobs|
@@ -48,16 +48,39 @@ def run_queue_random_order
   end
 end
 
+def run_all_default_order
+  current_job = ""
+  while current_job != nil do
+    GoodJob::Job.unfinished.priority_ordered.only_scheduled.limit(1).with_advisory_lock(unlock_session: true) do |good_jobs|
+      current_job = good_jobs.first
+      good_jobs.first&.destroy!
+    end
+  end
+end
+
+def run_all_queue_random_order
+  current_job = ""
+  while current_job != nil do
+    GoodJob::Job.unfinished.queue_random_order.priority_ordered.only_scheduled.limit(1).with_advisory_lock(unlock_session: true) do |good_jobs|
+      current_job = good_jobs.first
+      good_jobs.first&.destroy!
+    end
+  end
+end
+
+puts("\n\n")
+puts(" ------------------- Benchmark runs all jobs ------------------- ")
+puts("\n\n")
 
 Benchmark.ips do |x|
   x.report("default queue order") do
     make_seed(@jobs, @queues)
-    run_default_order()
+    run_all_default_order()
   end
 
   x.report("random queue order") do
     make_seed(@jobs, @queues)
-    run_queue_random_order()
+    run_all_queue_random_order()
   end
 
   x.compare!
@@ -65,7 +88,32 @@ end
 
 Benchmark.bm do |x|
   make_seed(@jobs, @queues)
-  x.report("default queue order") { run_default_order }
+  x.report("default queue order") { run_all_default_order }
   make_seed(@jobs, @queues)
-  x.report("random queue order") { run_queue_random_order }
+  x.report("random queue order") { run_all_queue_random_order }
+end
+
+puts("\n\n")
+puts(" ------------------- Benchmark runs until the first job of the last queue  ------------------- ")
+puts("\n\n")
+
+Benchmark.ips do |x|
+  x.report("default queue order") do
+    make_seed(@jobs, @queues)
+    run_default_order_until_last_queue()
+  end
+
+  x.report("random queue order") do
+    make_seed(@jobs, @queues)
+    run_queue_random_order_until_last_queue()
+  end
+
+  x.compare!
+end
+
+Benchmark.bm do |x|
+  make_seed(@jobs, @queues)
+  x.report("default queue order") { run_default_order_until_last_queue }
+  make_seed(@jobs, @queues)
+  x.report("random queue order") { run_queue_random_order_until_last_queue }
 end
