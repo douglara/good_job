@@ -86,14 +86,10 @@ module GoodJob
     # @return [ActiveRecord::Relation]
     scope :priority_ordered, -> { order('priority DESC NULLS LAST') }
 
-    scope :queue_random_order, -> { where('queue_name': GoodJob::Job.select('queue_name').group("queue_name").sample.queue_name) if GoodJob::Job.select('queue_name').group("queue_name").to_a.count > 1  }
-
-    scope :queue_random_order_v2, -> { 
+    scope :priority_ordered_randomized_queues, -> { 
       where('queue_name like (:random_queue)', random_queue: GoodJob::Job.select('queue_name').group("queue_name").limit(1).order('RANDOM()')).
       order('priority DESC NULLS LAST')
     }
-
-    scope :priority_order_randomized, -> { order('priority DESC NULLS LAST, RANDOM()') }
 
     # Order jobs by scheduled (unscheduled or soonest first).
     # @!method schedule_ordered
