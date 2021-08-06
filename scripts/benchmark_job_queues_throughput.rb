@@ -49,6 +49,16 @@ def run_queue_random_order_until_last_queue
   end
 end
 
+def run_queue_random_order_v2_until_last_queue
+  current_queue_name = ""
+  while current_queue_name != "queue_#{@queues}" do
+    GoodJob::Job.unfinished.queue_random_order_v2.only_scheduled.limit(1).with_advisory_lock(unlock_session: true) do |good_jobs|
+      current_queue_name = good_jobs.first.queue_name
+      good_jobs.first&.destroy!
+    end
+  end
+end
+
 def run_random_order_until_last_queue
   current_queue_name = ""
   while current_queue_name != "queue_#{@queues}" do
@@ -75,6 +85,16 @@ def run_all_queue_random_order
   current_job = ""
   while current_job != nil do
     GoodJob::Job.unfinished.queue_random_order.priority_ordered.only_scheduled.limit(1).with_advisory_lock(unlock_session: true) do |good_jobs|
+      current_job = good_jobs.first
+      good_jobs.first&.destroy!
+    end
+  end
+end
+
+def run_all_queue_random_order_v2
+  current_job = ""
+  while current_job != nil do
+    GoodJob::Job.unfinished.queue_random_order_v2.only_scheduled.limit(1).with_advisory_lock(unlock_session: true) do |good_jobs|
       current_job = good_jobs.first
       good_jobs.first&.destroy!
     end
@@ -111,6 +131,11 @@ Benchmark.ips do |x|
     run_all_queue_random_order()
   end
 
+  x.report("random queue order v2") do
+    make_seed(@jobs, @queues)
+    run_all_queue_random_order_v2()
+  end
+
   x.compare!
 end
 
@@ -121,6 +146,8 @@ Benchmark.bm do |x|
   x.report("random order") { run_all_default_order }
   make_seed(@jobs, @queues)
   x.report("random queue order") { run_all_queue_random_order }
+  make_seed(@jobs, @queues)
+  x.report("random queue order v2") { run_all_queue_random_order_v2 }
 end
 
 puts("\n\n")
@@ -143,6 +170,11 @@ Benchmark.ips do |x|
     run_queue_random_order_until_last_queue()
   end
 
+  x.report("random queue order v2") do
+    make_seed(@jobs, @queues)
+    run_queue_random_order_v2_until_last_queue()
+  end
+
   x.compare!
 end
 
@@ -153,4 +185,6 @@ Benchmark.bm do |x|
   x.report("random order") { run_random_order_until_last_queue }
   make_seed(@jobs, @queues)
   x.report("random queue order") { run_queue_random_order_until_last_queue }
+  make_seed(@jobs, @queues)
+  x.report("random queue order") { run_queue_random_order_v2_until_last_queue }
 end
