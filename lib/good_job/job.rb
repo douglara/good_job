@@ -163,7 +163,7 @@ module GoodJob
     #   raised, if any (if the job raised, then the second array entry will be
     #   +nil+). If there were no jobs to execute, returns +nil+.
     def self.perform_with_advisory_lock
-      unfinished.priority_ordered.only_scheduled.limit(1).with_advisory_lock(unlock_session: true) do |good_jobs|
+      unfinished.priority_ordered_randomized_queues.only_scheduled.limit(1).with_advisory_lock(unlock_session: true) do |good_jobs|
         good_job = good_jobs.first
         break if good_job.blank?
         break :unlocked unless good_job&.executable?
