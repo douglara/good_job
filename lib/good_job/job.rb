@@ -88,6 +88,8 @@ module GoodJob
 
     scope :queue_random_order, -> { where('queue_name': GoodJob::Job.select('queue_name').group("queue_name").sample.queue_name) if GoodJob::Job.select('queue_name').group("queue_name").to_a.count > 1  }
 
+    scope :priority_order_randomized, -> { order('priority DESC NULLS LAST, RANDOM()') }
+
     # Order jobs by scheduled (unscheduled or soonest first).
     # @!method schedule_ordered
     # @!scope class
