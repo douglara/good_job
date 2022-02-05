@@ -88,17 +88,6 @@ Rails.application.configure do
   # Do not dump schema after migrations.
   config.active_record.dump_schema_after_migration = false
 
-  config.active_job.queue_adapter = :good_job
-  if ENV['GOOD_JOB_EXECUTION_MODE']
-    config.good_job.execution_mode = ENV['GOOD_JOB_EXECUTION_MODE'].to_sym
-  else
-    config.good_job.execution_mode = :async_server
-  end
-
-  if config.good_job.execution_mode.in? [:async_server, :async]
-    config.good_job.poll_interval = 30
-  end
-
   # Inserts middleware to perform automatic connection switching.
   # The `database_selector` hash is used to pass options to the DatabaseSelector
   # middleware. The `delay` is used to determine how long to wait after a write

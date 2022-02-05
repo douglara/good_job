@@ -7,15 +7,21 @@ module GoodJob
   #
   class Configuration
     # Valid execution modes.
-    EXECUTION_MODES = [:async, :async_server, :external, :inline].freeze
+    EXECUTION_MODES = [:async, :async_all, :async_server, :external, :inline].freeze
     # Default number of threads to use per {Scheduler}
     DEFAULT_MAX_THREADS = 5
     # Default number of seconds between polls for jobs
     DEFAULT_POLL_INTERVAL = 10
+    # Default poll interval for async in development environment
+    DEFAULT_DEVELOPMENT_ASYNC_POLL_INTERVAL = -1
     # Default number of threads to use per {Scheduler}
     DEFAULT_MAX_CACHE = 10000
-    # Default number of seconds to preserve jobs for {CLI#cleanup_preserved_jobs}
+    # Default number of seconds to preserve jobs for {CLI#cleanup_preserved_jobs} and {GoodJob.cleanup_preserved_jobs}
     DEFAULT_CLEANUP_PRESERVED_JOBS_BEFORE_SECONDS_AGO = 24 * 60 * 60
+    # Default number of jobs to execute between preserved job cleanup runs
+    DEFAULT_CLEANUP_INTERVAL_JOBS = nil
+    # Default number of seconds to wait between preserved job cleanup runs
+    DEFAULT_CLEANUP_INTERVAL_SECONDS = nil
     # Default to always wait for jobs to finish for {Adapter#shutdown}
     DEFAULT_SHUTDOWN_TIMEOUT = -1
     # Default to not running cron
@@ -48,22 +54,22 @@ module GoodJob
     # for more details on possible values.
     # @return [Symbol]
     def execution_mode
-      @_execution_mode ||= begin
-        mode = if GoodJob::CLI.within_exe?
-                 :external
-               else
-                 options[:execution_mode] ||
-                   rails_config[:execution_mode] ||
-                   env['GOOD_JOB_EXECUTION_MODE']
-               end
+      mode = if GoodJob::CLI.within_exe?
+               :external
+             else
+               options[:execution_mode] ||
+                 rails_config[:execution_mode] ||
+                 env['GOOD_JOB_EXECUTION_MODE']
+             end
 
-        if mode
-          mode.to_sym
-        elsif Rails.env.development? || Rails.env.test?
-          :inline
-        else
-          :external
-        end
+      if mode
+        mode.to_sym
+      elsif Rails.env.development?
+        :async
+      elsif Rails.env.test?
+        :inline
+      else
+        :external
       end
     end
 
@@ -98,12 +104,19 @@ module GoodJob
     # poll (using this interval) for new queued jobs to execute.
     # @return [Integer]
     def poll_interval
-      (
+      interval = (
         options[:poll_interval] ||
           rails_config[:poll_interval] ||
-          env['GOOD_JOB_POLL_INTERVAL'] ||
-          DEFAULT_POLL_INTERVAL
-      ).to_i
+          env['GOOD_JOB_POLL_INTERVAL']
+      )
+
+      if interval
+        interval.to_i
+      elsif Rails.env.development? && execution_mode.in?([:async, :async_all, :async_server])
+        DEFAULT_DEVELOPMENT_ASYNC_POLL_INTERVAL
+      else
+        DEFAULT_POLL_INTERVAL
+      end
     end
 
     # The maximum number of future-scheduled jobs to store in memory.
@@ -136,21 +149,26 @@ module GoodJob
     def enable_cron
       value = ActiveModel::Type::Boolean.new.cast(
         options[:enable_cron] ||
-        rails_config[:enable_cron] ||
-        env['GOOD_JOB_ENABLE_CRON'] ||
-        false
+          rails_config[:enable_cron] ||
+          env['GOOD_JOB_ENABLE_CRON'] ||
+          false
       )
       value && cron.size.positive?
     end
+
     alias enable_cron? enable_cron
 
     def cron
-      env_cron = JSON.parse(ENV['GOOD_JOB_CRON']) if ENV['GOOD_JOB_CRON'].present?
+      env_cron = JSON.parse(ENV['GOOD_JOB_CRON'], symbolize_names: true) if ENV['GOOD_JOB_CRON'].present?
 
       options[:cron] ||
         rails_config[:cron] ||
         env_cron ||
         {}
+    end
+
+    def cron_entries
+      cron.map { |cron_key, params| GoodJob::CronEntry.new(params.merge(key: cron_key)) }
     end
 
     # Number of seconds to preserve jobs when using the +good_job cleanup_preserved_jobs+ CLI command.
@@ -165,6 +183,28 @@ module GoodJob
       ).to_i
     end
 
+    # Number of jobs a {Scheduler} will execute before cleaning up preserved jobs.
+    # @return [Integer, nil]
+    def cleanup_interval_jobs
+      value = (
+        rails_config[:cleanup_interval_jobs] ||
+          env['GOOD_JOB_CLEANUP_INTERVAL_JOBS'] ||
+          DEFAULT_CLEANUP_INTERVAL_JOBS
+      )
+      value.present? ? value.to_i : nil
+    end
+
+    # Number of seconds a {Scheduler} will wait before cleaning up preserved jobs.
+    # @return [Integer, nil]
+    def cleanup_interval_seconds
+      value = (
+        rails_config[:cleanup_interval_seconds] ||
+          env['GOOD_JOB_CLEANUP_INTERVAL_SECONDS'] ||
+          DEFAULT_CLEANUP_INTERVAL_SECONDS
+      )
+      value.present? ? value.to_i : nil
+    end
+
     # Tests whether to daemonize the process.
     # @return [Boolean]
     def daemonize?
@@ -177,6 +217,13 @@ module GoodJob
       options[:pidfile] ||
         env['GOOD_JOB_PIDFILE'] ||
         Rails.application.root.join('tmp', 'pids', 'good_job.pid')
+    end
+
+    # Port of the probe server
+    # @return [nil,Integer]
+    def probe_port
+      options[:probe_port] ||
+        env['GOOD_JOB_PROBE_PORT']
     end
 
     private

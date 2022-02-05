@@ -2,10 +2,17 @@
 require 'rails_helper'
 
 RSpec.describe GoodJob::Scheduler do
-  let(:performer) { instance_double(GoodJob::JobPerformer, next: nil, name: '', next_at: []) }
+  let(:performer) { instance_double(GoodJob::JobPerformer, next: nil, name: '', next_at: [], cleanup: nil) }
 
   after do
     described_class.instances.each(&:shutdown)
+  end
+
+  describe 'name' do
+    it 'is human readable and contains configuration values' do
+      scheduler = described_class.new(performer)
+      expect(scheduler.name).to eq('GoodJob::Scheduler(queues= max_threads=5)')
+    end
   end
 
   context 'when thread error' do
@@ -18,7 +25,7 @@ RSpec.describe GoodJob::Scheduler do
     end
 
     context 'when on task thread' do
-      it 'calls GoodJob.on_thread_error' do
+      it 'calls GoodJob.on_thread_error for thread errors' do
         allow(performer).to receive(:next) do
           THREAD_HAS_RUN.make_true
           raise "Whoops"
@@ -36,6 +43,24 @@ RSpec.describe GoodJob::Scheduler do
         expect(error_proc).to have_received(:call).with(an_instance_of(RuntimeError).and(having_attributes(message: 'Whoops')))
 
         scheduler.shutdown
+      end
+
+      it 'calls GoodJob.on_thread_error for unhandled_errors' do
+        allow(performer).to receive(:next) do
+          THREAD_HAS_RUN.make_true
+          GoodJob::ExecutionResult.new(value: nil, unhandled_error: StandardError.new("oopsy"))
+        end
+
+        allow(error_proc).to receive(:call) do
+          ERROR_TRIGGERED.make_true
+        end
+
+        scheduler = described_class.new(performer)
+        scheduler.create_thread
+        sleep_until { THREAD_HAS_RUN.true? }
+        sleep_until { ERROR_TRIGGERED.true? }
+
+        expect(error_proc).to have_received(:call).with(an_instance_of(StandardError).and(having_attributes(message: 'oopsy'))).at_least(:once)
       end
     end
   end
@@ -71,7 +96,9 @@ RSpec.describe GoodJob::Scheduler do
   end
 
   describe '#create_thread' do
-    it 'returns false if there are no threads available' do
+    # The JRuby version of the ThreadPoolExecutor sometimes does not immediately
+    # create a thread, which causes this test to flake on JRuby.
+    it 'returns false if there are no threads available', skip_if_java: true do
       configuration = GoodJob::Configuration.new({ queues: 'mice:1' })
       scheduler = described_class.from_configuration(configuration)
 
@@ -109,6 +136,25 @@ RSpec.describe GoodJob::Scheduler do
                                       active_cache: 0,
                                       available_cache: max_cache,
                                     })
+    end
+  end
+
+  describe '#cleanup' do
+    context 'when there are more than cleanup_interval_jobs' do
+      it 'runs cleanup' do
+        allow(GoodJob).to receive(:cleanup_preserved_jobs)
+        performed_jobs = 0
+        allow(performer).to receive(:next) do
+          performed_jobs += 1
+          performed_jobs < 4
+        end
+
+        scheduler = described_class.new(performer, cleanup_interval_jobs: 2)
+        2.times { scheduler.create_thread }
+        expect(performer).not_to have_received(:cleanup)
+        scheduler.create_thread
+        wait_until(max: 1) { expect(performer).to have_received(:cleanup) }
+      end
     end
   end
 

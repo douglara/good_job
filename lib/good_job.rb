@@ -18,9 +18,13 @@ require "good_job/railtie"
 #
 # +GoodJob+ is the top-level namespace and exposes configuration attributes.
 module GoodJob
+  include GoodJob::Dependencies
+
+  DEFAULT_LOGGER = ActiveSupport::TaggedLogging.new(ActiveSupport::Logger.new($stdout))
+
   # @!attribute [rw] active_record_parent_class
   #   @!scope class
-  #   The ActiveRecord parent class inherited by +GoodJob::Job+ (default: +ActiveRecord::Base+).
+  #   The ActiveRecord parent class inherited by +GoodJob::Execution+ (default: +ActiveRecord::Base+).
   #   Use this when using multiple databases or other custom ActiveRecord configuration.
   #   @return [ActiveRecord::Base]
   #   @example Change the base class:
@@ -34,7 +38,7 @@ module GoodJob
   #   @return [Logger, nil]
   #   @example Output GoodJob logs to a file:
   #     GoodJob.logger = ActiveSupport::TaggedLogging.new(ActiveSupport::Logger.new("log/my_logs.log"))
-  mattr_accessor :logger, default: ActiveSupport::TaggedLogging.new(ActiveSupport::Logger.new($stdout))
+  mattr_accessor :logger, default: DEFAULT_LOGGER
 
   # @!attribute [rw] preserve_job_records
   #   @!scope class
@@ -42,7 +46,8 @@ module GoodJob
   #   By default, GoodJob deletes job records after the job is completed successfully.
   #   If you want to preserve jobs for latter inspection, set this to +true+.
   #   If you want to preserve only jobs that finished with error for latter inspection, set this to +:on_unhandled_error+.
-  #   If +true+, you will need to clean out jobs using the +good_job cleanup_preserved_jobs+ CLI command.
+  #   If +true+, you will need to clean out jobs using the +good_job cleanup_preserved_jobs+ CLI command or
+  #   by using +Goodjob.cleanup_preserved_jobs+.
   #   @return [Boolean, nil]
   mattr_accessor :preserve_job_records, default: false
 
@@ -55,25 +60,6 @@ module GoodJob
   #   @return [Boolean, nil]
   mattr_accessor :retry_on_unhandled_error, default: true
 
-  # @deprecated Use {GoodJob#retry_on_unhandled_error} instead.
-  # @return [Boolean, nil]
-  def self.reperform_jobs_on_standard_error
-    ActiveSupport::Deprecation.warn(
-      "Calling 'GoodJob.reperform_jobs_on_standard_error' is deprecated. Please use 'retry_on_unhandled_error'"
-    )
-    retry_on_unhandled_error
-  end
-
-  # @deprecated Use {GoodJob#retry_on_unhandled_error=} instead.
-  # @param value [Boolean]
-  # @return [Boolean]
-  def self.reperform_jobs_on_standard_error=(value)
-    ActiveSupport::Deprecation.warn(
-      "Setting 'GoodJob.reperform_jobs_on_standard_error=' is deprecated. Please use 'retry_on_unhandled_error='"
-    )
-    self.retry_on_unhandled_error = value
-  end
-
   # @!attribute [rw] on_thread_error
   #   @!scope class
   #   This callable will be called when an exception reaches GoodJob (default: +nil+).
@@ -83,6 +69,13 @@ module GoodJob
   #     GoodJob.on_thread_error = -> (exception) { Raven.capture_exception(exception) }
   #   @return [Proc, nil]
   mattr_accessor :on_thread_error, default: nil
+
+  # Called with exception when a GoodJob thread raises an exception
+  # @param exception [Exception] Exception that was raised
+  # @return [void]
+  def self._on_thread_error(exception)
+    on_thread_error.call(exception) if on_thread_error.respond_to?(:call)
+  end
 
   # Stop executing jobs.
   # GoodJob does its work in pools of background threads.
@@ -96,16 +89,7 @@ module GoodJob
   #   * +1..+, the scheduler will wait that many seconds before stopping any remaining active tasks.
   # @param wait [Boolean] whether to wait for shutdown
   # @return [void]
-  def self.shutdown(timeout: -1, wait: nil)
-    timeout = if wait.nil?
-                timeout
-              else
-                ActiveSupport::Deprecation.warn(
-                  "Using `GoodJob.shutdown` with `wait:` kwarg is deprecated; use `timeout:` kwarg instead e.g. GoodJob.shutdown(timeout: #{wait ? '-1' : 'nil'})"
-                )
-                wait ? -1 : nil
-              end
-
+  def self.shutdown(timeout: -1)
     _shutdown_all(_executables, timeout: timeout)
   end
 
@@ -139,6 +123,28 @@ module GoodJob
       executables.each { |executable| executable.send(method_name, timeout: [stop_at - Time.current, 0].max) }
     else
       executables.each { |executable| executable.send(method_name, timeout: timeout) }
+    end
+  end
+
+  # Deletes preserved job records.
+  # By default, GoodJob deletes job records when the job is performed and this
+  # method is not necessary. However, when `GoodJob.preserve_job_records = true`,
+  # the jobs will be preserved in the database. This is useful when wanting to
+  # analyze or inspect job performance.
+  # If you are preserving job records this way, use this method regularly to
+  # delete old records and preserve space in your database.
+  # @params older_than [nil,Numeric,ActiveSupport::Duration] Jobs older than this will be deleted (default: +86400+).
+  # @return [Integer] Number of jobs that were deleted.
+  def self.cleanup_preserved_jobs(older_than: nil)
+    older_than ||= GoodJob::Configuration.new({}).cleanup_preserved_jobs_before_seconds_ago
+    timestamp = Time.current - older_than
+
+    ActiveSupport::Notifications.instrument("cleanup_preserved_jobs.good_job", { older_than: older_than, timestamp: timestamp }) do |payload|
+      old_jobs = GoodJob::ActiveJobJob.where('finished_at <= ?', timestamp)
+      old_jobs_count = old_jobs.count
+
+      GoodJob::Execution.where(job: old_jobs).delete_all
+      payload[:deleted_records_count] = old_jobs_count
     end
   end
 

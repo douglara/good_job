@@ -19,7 +19,7 @@ RSpec.describe GoodJob::Notifier do
     end
   end
 
-  describe '#listen', skip_if_java: true do
+  describe '#listen' do
     it 'loops until it receives a command' do
       stub_const 'RECEIVED_MESSAGE', Concurrent::AtomicBoolean.new(false)
 
@@ -42,10 +42,40 @@ RSpec.describe GoodJob::Notifier do
 
       notifier = described_class.new
       sleep_until(max: 5, increments_of: 0.5) { notifier.listening? }
-      described_class.notify(true)
-      notifier.shutdown
 
-      expect(on_thread_error).to have_received(:call).at_least(:once).with instance_of(ExpectedError)
+      described_class.notify(true)
+      wait_until(max: 5, increments_of: 0.5) { expect(on_thread_error).to have_received(:call).at_least(:once).with instance_of(ExpectedError) }
+
+      notifier.shutdown
+    end
+  end
+
+  describe 'Process tracking' do
+    it 'creates and destroys a new Process record' do
+      notifier = described_class.new
+
+      wait_until { expect(GoodJob::Process.count).to eq 1 }
+
+      process = GoodJob::Process.first
+      expect(process.id).to eq GoodJob::Process.current_id
+      expect(process).to be_advisory_locked
+
+      notifier.shutdown
+      expect { process.reload }.to raise_error ActiveRecord::RecordNotFound
+    end
+
+    context 'when, for some reason, the process already exists' do
+      it 'does not create a new process' do
+        process = GoodJob::Process.register
+        notifier = described_class.new
+
+        wait_until { expect(notifier).to be_listening }
+        expect(GoodJob::Process.count).to eq 1
+
+        notifier.shutdown
+        expect(process.reload).to eq process
+        process.advisory_unlock
+      end
     end
   end
 end

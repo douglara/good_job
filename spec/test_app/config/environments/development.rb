@@ -59,15 +59,4 @@ Rails.application.configure do
   # Use an evented file watcher to asynchronously detect changes in source code,
   # routes, locales, etc. This feature depends on the listen gem.
   # config.file_watcher = ActiveSupport::EventedFileUpdateChecker
-
-  config.active_job.queue_adapter = :good_job
-  if ENV['GOOD_JOB_EXECUTION_MODE']
-    config.good_job.execution_mode = ENV['GOOD_JOB_EXECUTION_MODE'].to_sym
-  else
-    config.good_job.execution_mode = :async_server
-  end
-
-  if config.good_job.execution_mode.in? [:async_server, :async]
-    config.good_job.poll_interval = 30
-  end
 end

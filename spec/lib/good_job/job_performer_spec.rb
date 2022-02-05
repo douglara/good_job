@@ -12,12 +12,12 @@ RSpec.describe GoodJob::JobPerformer do
 
   describe '#next' do
     it 'calls GoodJob.perform_with_advisory_lock' do
-      allow(GoodJob::Job).to receive(:perform_with_advisory_lock)
+      allow(GoodJob::Execution).to receive(:perform_with_advisory_lock)
 
       job_performer = described_class.new('*')
       job_performer.next
 
-      expect(GoodJob::Job).to have_received(:perform_with_advisory_lock)
+      expect(GoodJob::Execution).to have_received(:perform_with_advisory_lock)
     end
   end
 
@@ -36,6 +36,14 @@ RSpec.describe GoodJob::JobPerformer do
 
       result = described_class.new('mice').next?(state)
       expect(result).to eq false
+    end
+  end
+
+  describe '#cleanup' do
+    it 'calls GoodJob.cleanup_preserved_jobs' do
+      allow(GoodJob).to receive(:cleanup_preserved_jobs)
+      described_class.new('*').cleanup
+      expect(GoodJob).to have_received(:cleanup_preserved_jobs)
     end
   end
 end

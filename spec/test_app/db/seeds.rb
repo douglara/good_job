@@ -1,5 +1,5 @@
 start_date = 7.days.ago
-time_increments = (1.minute..90.minutes).to_a
+time_increments = (1.minute..10.minutes).to_a
 job_classes = ['ExampleJob', 'OtherJob']
 queue_names = ["default", "mice", "elephants"]
 
@@ -41,5 +41,5 @@ loop do
   break if start_date > Time.current
 end
 
-GoodJob::Job.insert_all(jobs_data)
-puts "Inserted #{jobs_data.size} job records for a total of #{GoodJob::Job.count} job records."
+GoodJob::Execution.insert_all(jobs_data)
+puts "Inserted #{jobs_data.size} job records for a total of #{GoodJob::Execution.count} job records."

@@ -79,6 +79,9 @@ module GoodJob
     method_option :pidfile,
                   type: :string,
                   desc: "Path to write daemonized Process ID (env var: GOOD_JOB_PIDFILE, default: tmp/pids/good_job.pid)"
+    method_option :probe_port,
+                  type: :numeric,
+                  desc: "Port for http health check (env var: GOOD_JOB_PROBE_PORT, default: nil)"
 
     def start
       set_up_application!
@@ -91,7 +94,14 @@ module GoodJob
       scheduler = GoodJob::Scheduler.from_configuration(configuration, warm_cache_on_initialize: true)
       notifier.recipients << [scheduler, :create_thread]
       poller.recipients << [scheduler, :create_thread]
-      cron_manager = GoodJob::CronManager.new(configuration.cron, start_on_initialize: true) if configuration.enable_cron?
+
+      cron_manager = GoodJob::CronManager.new(configuration.cron_entries, start_on_initialize: true) if configuration.enable_cron?
+
+      if configuration.probe_port
+        probe_server = GoodJob::ProbeServer.new(port: configuration.probe_port)
+        probe_server.start
+      end
+
       @stop_good_job_executable = false
       %w[INT TERM].each do |signal|
         trap(signal) { @stop_good_job_executable = true }
@@ -104,6 +114,7 @@ module GoodJob
 
       executors = [notifier, poller, cron_manager, scheduler].compact
       GoodJob._shutdown_all(executors, timeout: configuration.shutdown_timeout)
+      probe_server&.stop
     end
 
     default_task :start
@@ -134,16 +145,7 @@ module GoodJob
 
       configuration = GoodJob::Configuration.new(options)
 
-      timestamp = Time.current - configuration.cleanup_preserved_jobs_before_seconds_ago
-
-      ActiveSupport::Notifications.instrument(
-        "cleanup_preserved_jobs.good_job",
-        { before_seconds_ago: configuration.cleanup_preserved_jobs_before_seconds_ago, timestamp: timestamp }
-      ) do |payload|
-        deleted_records_count = GoodJob::Job.finished(timestamp).delete_all
-
-        payload[:deleted_records_count] = deleted_records_count
-      end
+      GoodJob.cleanup_preserved_jobs(older_than: configuration.cleanup_preserved_jobs_before_seconds_ago)
     end
 
     no_commands do

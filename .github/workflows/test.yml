@@ -34,11 +34,25 @@ jobs:
     timeout-minutes: 15
     strategy:
       matrix:
-        ruby: [2.5, 2.6, 2.7, 3.0, jruby-9.2.13.0, jruby-9.2.19.0]
-        pg: [12.5]
+        ruby: [2.5, 2.6, 2.7, "3.0", 3.1, jruby-9.2, jruby-9.3]
+        pg: [14]
         include:
-          - ruby: 2.7
-            pg: 10.8
+          - ruby: "3.0"
+            pg: 10
+          - ruby: "3.0"
+            pg: 11
+          - ruby: "3.0"
+            pg: 12
+          - ruby: "3.0"
+            pg: 13
+          - ruby: jruby-9.3
+            pg: 10
+          - ruby: jruby-9.3
+            pg: 11
+          - ruby: jruby-9.3
+            pg: 12
+          - ruby: jruby-9.3
+            pg: 13
     env:
       PGHOST: localhost
       PGUSER: good_job
@@ -83,8 +97,7 @@ jobs:
 
       # Test
       - name: Set up test database
-        run: bin/rails db:test:prepare
-        working-directory: spec/test_app
+        run: bundle exec appraisal spec/test_app/bin/rails db:test:prepare
       - name: Run Unit tests
         run: |
           bundle exec appraisal rspec --exclude-pattern "spec/system/**/*_spec.rb, spec/generators/**/*_spec.rb" \

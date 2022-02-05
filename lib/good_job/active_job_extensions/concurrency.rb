@@ -4,26 +4,41 @@ module GoodJob
     module Concurrency
       extend ActiveSupport::Concern
 
-      ConcurrencyExceededError = Class.new(StandardError)
+      class ConcurrencyExceededError < StandardError
+        def backtrace
+          [] # suppress backtrace
+        end
+      end
 
       included do
         class_attribute :good_job_concurrency_config, instance_accessor: false, default: {}
 
-        before_enqueue do |job|
-          # Always allow jobs to be retried because the current job's execution will complete momentarily
-          next if CurrentExecution.active_job_id == job.job_id
+        around_enqueue do |job, block|
+          # Don't attempt to enforce concurrency limits with other queue adapters.
+          next(block.call) unless job.class.queue_adapter.is_a?(GoodJob::Adapter)
 
-          limit = job.class.good_job_concurrency_config.fetch(:enqueue_limit, Float::INFINITY)
-          next if limit.blank? || (0...Float::INFINITY).exclude?(limit)
+          # Always allow jobs to be retried because the current job's execution will complete momentarily
+          next(block.call) if CurrentThread.active_job_id == job.job_id
+
+          enqueue_limit = job.class.good_job_concurrency_config[:enqueue_limit]
+          total_limit = job.class.good_job_concurrency_config[:total_limit]
+
+          has_limit = (enqueue_limit.present? && (0...Float::INFINITY).cover?(enqueue_limit)) ||
+                      (total_limit.present? && (0...Float::INFINITY).cover?(total_limit))
+          next(block.call) unless has_limit
 
           key = job.good_job_concurrency_key
-          next if key.blank?
+          next(block.call) if key.blank?
 
-          GoodJob::Job.new.with_advisory_lock(key: key, function: "pg_advisory_lock") do
-            # TODO: Why is `unscoped` necessary? Nested scope is bleeding into subsequent query?
-            enqueue_concurrency = GoodJob::Job.unscoped.where(concurrency_key: key).unfinished.count
+          GoodJob::Execution.advisory_lock_key(key, function: "pg_advisory_lock") do
+            enqueue_concurrency = if enqueue_limit
+                                    GoodJob::Execution.where(concurrency_key: key).unfinished.advisory_unlocked.count
+                                  else
+                                    GoodJob::Execution.where(concurrency_key: key).unfinished.count
+                                  end
+
             # The job has not yet been enqueued, so check if adding it will go over the limit
-            throw :abort if enqueue_concurrency + 1 > limit
+            block.call unless enqueue_concurrency + 1 > (enqueue_limit || total_limit)
           end
         end
 
@@ -34,16 +49,22 @@ module GoodJob
         )
 
         before_perform do |job|
-          limit = job.class.good_job_concurrency_config.fetch(:perform_limit, Float::INFINITY)
-          next if limit.blank? || (0...Float::INFINITY).exclude?(limit)
+          # Don't attempt to enforce concurrency limits with other queue adapters.
+          next unless job.class.queue_adapter.is_a?(GoodJob::Adapter)
+
+          perform_limit = job.class.good_job_concurrency_config[:perform_limit] ||
+                          job.class.good_job_concurrency_config[:total_limit]
+
+          has_limit = perform_limit.present? && (0...Float::INFINITY).cover?(perform_limit)
+          next unless has_limit
 
           key = job.good_job_concurrency_key
           next if key.blank?
 
-          GoodJob::Job.new.with_advisory_lock(key: key, function: "pg_advisory_lock") do
-            perform_concurrency = GoodJob::Job.unscoped.where(concurrency_key: key).advisory_locked.count
+          GoodJob::Execution.advisory_lock_key(key, function: "pg_advisory_lock") do
+            allowed_active_job_ids = GoodJob::Execution.where(concurrency_key: key).advisory_locked.order(Arel.sql("COALESCE(performed_at, scheduled_at, created_at) ASC")).limit(perform_limit).pluck(:active_job_id)
             # The current job has already been locked and will appear in the previous query
-            raise GoodJob::ActiveJobExtensions::Concurrency::ConcurrencyExceededError if perform_concurrency > limit
+            raise GoodJob::ActiveJobExtensions::Concurrency::ConcurrencyExceededError unless allowed_active_job_ids.include? job.job_id
           end
         end
       end

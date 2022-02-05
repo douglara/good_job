@@ -2,29 +2,27 @@
 THREAD_ERRORS = Concurrent::Array.new
 
 RSpec.configure do |config|
-  config.before do
+  config.around do |example|
+    GoodJob::CurrentThread.reset
     GoodJob.preserve_job_records = false
 
-    PgLock.advisory_lock.owns.all?(&:unlock) if PgLock.advisory_lock.owns.count > 0
-    PgLock.advisory_lock.others.each(&:unlock!) if PgLock.advisory_lock.others.count > 0
-    expect(PgLock.advisory_lock.count).to eq(0), "Existing advisory locks BEFORE test run"
-  end
+    PgLock.current_database.advisory_lock.owns.all?(&:unlock) if PgLock.advisory_lock.owns.count > 0
+    PgLock.current_database.advisory_lock.others.each(&:unlock!) if PgLock.advisory_lock.others.count > 0
+    expect(PgLock.current_database.advisory_lock.count).to eq(0), "Existing advisory locks BEFORE test run"
 
-  config.around do |example|
     THREAD_ERRORS.clear
-
     Thread.current.name = "RSpec: #{example.description}"
     GoodJob.on_thread_error = lambda do |exception|
       THREAD_ERRORS << [Thread.current.name, exception]
     end
 
     example.run
-
-    expect(THREAD_ERRORS).to be_empty
   end
 
   config.after do
     GoodJob.shutdown(timeout: -1)
+
+    expect(THREAD_ERRORS).to be_empty
 
     expect(GoodJob::Notifier.instances).to all be_shutdown
     GoodJob::Notifier.instances.clear
@@ -38,12 +36,13 @@ RSpec.configure do |config|
     expect(GoodJob::Scheduler.instances).to all be_shutdown
     GoodJob::Scheduler.instances.clear
 
-    expect(PgLock.owns.advisory_lock.count).to eq(0), "Existing owned advisory locks AFTER test run"
+    expect(PgLock.current_database.advisory_lock.owns.count).to eq(0), "Existing owned advisory locks AFTER test run"
 
-    if PgLock.others.advisory_lock.any?
-      puts "There are #{PgLock.others.advisory_lock.count} advisory locks still open."
+    other_locks = PgLock.current_database.advisory_lock.others
+    if other_locks.any?
+      puts "There are #{other_locks.count} advisory locks still open."
       puts "\n\nAdvisory Locks:"
-      PgLock.others.advisory_lock.includes(:pg_stat_activity).each do |pg_lock|
+      other_locks.includes(:pg_stat_activity).each do |pg_lock|
         puts "  - #{pg_lock.pid}: #{pg_lock.pg_stat_activity.application_name}"
       end
 
@@ -52,7 +51,8 @@ RSpec.configure do |config|
         puts "  - #{pg_stat_activity.pid}: #{pg_stat_activity.application_name}"
       end
     end
-    expect(PgLock.others.advisory_lock.count).to eq(0), "Existing others advisory locks AFTER test run"
+
+    expect(PgLock.current_database.advisory_lock.others.count).to eq(0), "Existing others advisory locks AFTER test run"
   end
 end
 
@@ -92,6 +92,7 @@ class PgLock < ActiveRecord::Base
 
   belongs_to :pg_stat_activity, primary_key: :pid, foreign_key: :pid
 
+  scope :current_database, -> { joins("JOIN pg_database ON pg_database.oid = pg_locks.database").where("pg_database.datname = current_database()") }
   scope :advisory_lock, -> { where(locktype: 'advisory') }
   scope :owns, -> { where('pid = pg_backend_pid()') }
   scope :others, -> { where('pid != pg_backend_pid()') }
@@ -100,13 +101,13 @@ class PgLock < ActiveRecord::Base
     query = <<~SQL.squish
       SELECT pg_advisory_unlock(($1::bigint << 32) + $2::bigint) AS unlocked
     SQL
-    self.class.connection.exec_query(GoodJob::Job.pg_or_jdbc_query(query), 'PgLock Advisory Unlock', [[nil, classid], [nil, objid]]).first['unlocked']
+    self.class.connection.exec_query(GoodJob::Execution.pg_or_jdbc_query(query), 'PgLock Advisory Unlock', [[nil, classid], [nil, objid]]).first['unlocked']
   end
 
   def unlock!
     query = <<~SQL.squish
       SELECT pg_terminate_backend(#{self[:pid]}) AS terminated
     SQL
-    self.class.connection.exec_query(GoodJob::Job.pg_or_jdbc_query(query), 'PgLock Terminate Backend Lock', []).first['terminated']
+    self.class.connection.exec_query(GoodJob::Execution.pg_or_jdbc_query(query), 'PgLock Terminate Backend Lock', []).first['terminated']
   end
 end

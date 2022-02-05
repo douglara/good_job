@@ -1,45 +1,51 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <title>Good Job Dashboard</title>
+  <meta charset="utf-8">
+  <meta content="width=device-width, initial-scale=1, shrink-to-fit=no" name="viewport">
   <%= csrf_meta_tags %>
   <%= csp_meta_tag %>
 
-  <%= stylesheet_link_tag bootstrap_path(format: :css, v: GoodJob::VERSION) %>
-  <%= stylesheet_link_tag chartist_path(format: :css, v: GoodJob::VERSION) %>
-  <%= stylesheet_link_tag style_path(format: :css, v: GoodJob::VERSION) %>
+  <%# Assets must use *_url route helpers to avoid being overriden by config.asset_host %>
+  <%= stylesheet_link_tag bootstrap_url(format: :css, v: GoodJob::VERSION), skip_pipeline: true %>
+  <%= stylesheet_link_tag style_url(format: :css, v: GoodJob::VERSION) %>
 
-  <%= javascript_include_tag bootstrap_path(format: :js, v: GoodJob::VERSION) %>
-  <%= javascript_include_tag chartist_path(format: :js, v: GoodJob::VERSION) %>
+  <%= javascript_include_tag bootstrap_url(format: :js, v: GoodJob::VERSION), nonce: true %>
+  <%= javascript_include_tag chartjs_url(format: :js, v: GoodJob::VERSION), nonce: true %>
+  <%= javascript_include_tag scripts_url(format: :js, v: GoodJob::VERSION), nonce: true %>
+
+  <%= javascript_include_tag rails_ujs_url(format: :js, v: GoodJob::VERSION), nonce: true %>
 </head>
 <body>
   <nav class="navbar navbar-expand-lg navbar-light bg-light">
     <div class="container-fluid">
       <%= link_to "GoodJob 👍", root_path, class: 'navbar-brand mb-0 h1' %>
-      <button class="navbar-toggler" type="button" data-toggle="collapse" data-bs-target="#navbarSupportedContent" aria-controls="navbarSupportedContent" aria-expanded="false" aria-label="Toggle navigation">
+      <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarSupportedContent" aria-controls="navbarSupportedContent" aria-expanded="false" aria-label="Toggle navigation">
         <span class="navbar-toggler-icon"></span>
       </button>
 
       <div class="collapse navbar-collapse" id="navbarSupportedContent">
         <ul class="navbar-nav me-auto">
           <li class="nav-item">
-            <%= link_to root_path, class: ["nav-link", ("active" if current_page?(root_path))] do %>
-              All jobs <span class="badge bg-secondary">More views coming soon</span>
-            <% end %>
+            <%= link_to "All Executions", root_path, class: ["nav-link", ("active" if current_page?(root_path))] %>
           </li>
-
-          <!-- Coming Soon
-            <li class="nav-item">
-              <%= link_to "Upcoming Jobs", 'todo', class: ["nav-link", ("active" if current_page?('todo'))] %>
-            </li>
-            <li class="nav-item">
-              <%= link_to "Finished Jobs", 'todo', class: ["nav-link", ("active" if current_page?('todo'))] %>
-            </li>
-            <li class="nav-item">
-              <%= link_to "Errored Jobs", 'todo', class: ["nav-link", ("active" if current_page?('todo'))] %>
-            </li>
-          -->
+          <li class="nav-item">
+            <%= link_to "All Jobs", jobs_path, class: ["nav-link", ("active" if current_page?(jobs_path))] %>
+          </li>
+          <li class="nav-item">
+            <%= link_to "Cron Schedules", cron_entries_path, class: ["nav-link", ("active" if current_page?(cron_entries_path))] %>
+          </li>
+          <li class="nav-item">
+            <%= link_to "Processes", processes_path, class: ["nav-link", ("active" if current_page?(processes_path))] %>
+          </li>
+          <li class="nav-item">
+            <div class="nav-link">
+              <span class="badge bg-secondary">More views coming soon</span>
+            </div>
+          </li>
         </ul>
+        <div class="text-muted" title="Now is <%= Time.current %>">Times are displayed in <%= Time.current.zone %> timezone</div>
       </div>
     </div>
   </nav>
@@ -59,7 +65,7 @@
       </div>
     <% elsif alert %>
       <div class="alert alert-warning alert-dismissible fade show d-flex align-items-center offset-md-3 col-6" role="alert">
-        <%= render "good_job/shared/icons/check", class: "flex-shrink-0 me-2" %>
+        <%= render "good_job/shared/icons/exclamation", class: "flex-shrink-0 me-2" %>
         <div><%= alert %></div>
         <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
       </div>

@@ -13,9 +13,6 @@ module GoodJob
     # @param queue_string [String] Queues to execute jobs from
     def initialize(queue_string)
       @queue_string = queue_string
-
-      @job_query = Concurrent::Delay.new { GoodJob::Job.queue_string(queue_string) }
-      @parsed_queues = Concurrent::Delay.new { GoodJob::Job.queue_parser(queue_string) }
     end
 
     # A meaningful name to identify the performer in logs and for debugging.
@@ -60,16 +57,22 @@ module GoodJob
       job_query.next_scheduled_at(after: after, limit: limit, now_limit: now_limit)
     end
 
+    # Delete expired preserved jobs
+    # @return [void]
+    def cleanup
+      GoodJob.cleanup_preserved_jobs
+    end
+
     private
 
     attr_reader :queue_string
 
     def job_query
-      @job_query.value
+      @_job_query ||= GoodJob::Execution.queue_string(queue_string)
     end
 
     def parsed_queues
-      @parsed_queues.value
+      @_parsed_queues ||= GoodJob::Execution.queue_parser(queue_string)
     end
   end
 end

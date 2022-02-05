@@ -12,6 +12,7 @@ inherit_mode:
 
 AllCops:
   TargetRubyVersion: 2.5
+  TargetRailsVersion: 5.2
   DisplayCopNames: true
   DisplayStyleGuide: true
   Include:
@@ -21,6 +22,7 @@ AllCops:
     - spec/test_app/**/*
     - vendor/**/*
     - scripts/**/*
+    - gemfiles/**/*
   NewCops: enable
 
 Layout/EmptyLineAfterMagicComment:
@@ -98,6 +100,10 @@ Style/EmptyMethod:
 
 Style/FormatStringToken:
   EnforcedStyle: template
+
+Style/FrozenStringLiteralComment:
+  Exclude:
+    - gemfiles/*.gemfile
 
 Style/MultilineBlockChain:
   Enabled: false

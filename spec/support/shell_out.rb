@@ -3,6 +3,7 @@ require 'open3'
 
 class ShellOut
   WaitTimeout = Class.new(StandardError)
+  KILL_TIMEOUT = 5
   PROCESS_EXIT = "[PROCESS EXIT]"
 
   def self.command(command, env: {}, &block)
@@ -26,6 +27,7 @@ class ShellOut
           line = fstdout.gets
           break unless line
 
+          Rails.logger.debug { "STDOUT: #{line}" }
           foutput << line
         end
       end
@@ -34,6 +36,7 @@ class ShellOut
           line = fstderr.gets
           break unless line
 
+          Rails.logger.debug { "STDERR: #{line}" }
           foutput << line
         end
       end
@@ -42,16 +45,28 @@ class ShellOut
         yield(self)
       ensure
         begin
+          Rails.logger.debug { "Sending TERM to #{pid}" }
           Process.kill('TERM', pid)
-          wait_thr.value
-        rescue Errno::ESRCH
+
+          Concurrent::Promises.future(pid, @output) do |fpid|
+            sleep 5
+            Process.kill('KILL', fpid)
+          rescue Errno::ECHILD, Errno::ESRCH
+            nil
+          else
+            Rails.logger.debug { "TERM unsuccessful, sent KILL to #{pid}" }
+          end
+
+          Process.wait(pid)
+        rescue Errno::ECHILD, Errno::ESRCH
           @output << PROCESS_EXIT
         end
       end
-
+      status = wait_thr.value
       stdout_future.value
       stderr_future.value
 
+      Rails.logger.debug { "Command finished: #{status}" }
       @output
     end
   end

@@ -19,10 +19,10 @@ module GoodJob
     #   @return [void]
     def create(event)
       # FIXME: This method does not match any good_job notifications.
-      good_job = event.payload[:good_job]
+      execution = event.payload[:execution]
 
       debug do
-        "GoodJob created job resource with id #{good_job.id}"
+        "GoodJob created job resource with id #{execution.id}"
       end
     end
 
@@ -59,11 +59,11 @@ module GoodJob
 
     # @!macro notification_responder
     def cron_manager_start(event)
-      cron_jobs = event.payload[:cron_jobs]
-      cron_jobs_count = cron_jobs.size
+      cron_entries = event.payload[:cron_entries]
+      cron_jobs_count = cron_entries.size
 
       info do
-        "GoodJob started cron with #{cron_jobs_count} #{'jobs'.pluralize(cron_jobs_count)}."
+        "GoodJob started cron with #{cron_jobs_count} #{'job'.pluralize(cron_jobs_count)}."
       end
     end
 
@@ -96,12 +96,12 @@ module GoodJob
 
     # @!macro notification_responder
     def perform_job(event)
-      good_job = event.payload[:good_job]
+      execution = event.payload[:execution]
       process_id = event.payload[:process_id]
       thread_name = event.payload[:thread_name]
 
       info(tags: [process_id, thread_name]) do
-        "Executed GoodJob #{good_job.id}"
+        "Executed GoodJob #{execution.id}"
       end
     end
 
@@ -206,7 +206,7 @@ module GoodJob
       good_job_tag = ["ActiveJob"].freeze
 
       self.class.loggers.inject(block) do |inner, each_logger|
-        if each_logger.respond_to?(:tagged)
+        if each_logger.respond_to?(:tagged) && each_logger.formatter
           tags_for_logger = if each_logger.formatter.current_tags.include?("ActiveJob")
                               good_job_tag + tags
                             else

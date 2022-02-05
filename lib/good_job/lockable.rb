@@ -24,7 +24,7 @@ module GoodJob
 
     included do
       # Default column to be used when creating Advisory Locks
-      class_attribute :advisory_lockable_column, instance_accessor: false, default: Concurrent::Delay.new { primary_key }
+      class_attribute :advisory_lockable_column, instance_accessor: false, default: nil
 
       # Default Postgres function to be used for Advisory Locks
       class_attribute :advisory_lockable_function, default: "pg_try_advisory_lock"
@@ -51,7 +51,7 @@ module GoodJob
         composed_cte = Arel::Nodes::As.new(cte_table, Arel::Nodes::SqlLiteral.new([cte_type, "(", cte_query.to_sql, ")"].join(' ')))
         query = cte_table.project(cte_table[:id])
                          .with(composed_cte)
-                         .where(Arel.sql(sanitize_sql_for_conditions(["#{function}(('x' || substr(md5(:table_name || #{connection.quote_table_name(cte_table.name)}.#{connection.quote_column_name(column)}::text), 1, 16))::bit(64)::bigint)", { table_name: table_name }])))
+                         .where(Arel.sql(sanitize_sql_for_conditions(["#{function}(('x' || substr(md5(:table_name || '-' || #{connection.quote_table_name(cte_table.name)}.#{connection.quote_column_name(column)}::text), 1, 16))::bit(64)::bigint)", { table_name: table_name }])))
 
         limit = original_query.arel.ast.limit
         query.limit = limit.value if limit.present?
@@ -75,8 +75,8 @@ module GoodJob
         join_sql = <<~SQL.squish
           LEFT JOIN pg_locks ON pg_locks.locktype = 'advisory'
             AND pg_locks.objsubid = 1
-            AND pg_locks.classid = ('x' || substr(md5(:table_name || #{quoted_table_name}.#{connection.quote_column_name(column)}::text), 1, 16))::bit(32)::int
-            AND pg_locks.objid = (('x' || substr(md5(:table_name || #{quoted_table_name}.#{connection.quote_column_name(column)}::text), 1, 16))::bit(64) << 32)::bit(32)::int
+            AND pg_locks.classid = ('x' || substr(md5(:table_name || '-' || #{quoted_table_name}.#{connection.quote_column_name(column)}::text), 1, 16))::bit(32)::int
+            AND pg_locks.objid = (('x' || substr(md5(:table_name || '-' || #{quoted_table_name}.#{connection.quote_column_name(column)}::text), 1, 16))::bit(64) << 32)::bit(32)::int
         SQL
 
         joins(sanitize_sql_for_conditions([join_sql, { table_name: table_name }]))
@@ -148,24 +148,69 @@ module GoodJob
         raise ArgumentError, "Must provide a block" unless block_given?
 
         records = advisory_lock(column: column, function: function).to_a
+
         begin
-          yield(records)
+          unscoped { yield(records) }
         ensure
           if unlock_session
             advisory_unlock_session
           else
             records.each do |record|
-              key = [table_name, record[_advisory_lockable_column]].join
-              record.advisory_unlock(key: key, function: advisory_unlockable_function(function))
+              record.advisory_unlock(key: record.lockable_column_key(column: column), function: advisory_unlockable_function(function))
             end
           end
         end
       end
 
-      # Allow advisory_lockable_column to be a `Concurrent::Delay`
+      # Acquires an advisory lock on this record if it is not already locked by
+      # another database session. Be careful to ensure you release the lock when
+      # you are done with {#advisory_unlock_key} to release all remaining locks.
+      # @param key [String, Symbol] Key to Advisory Lock against
+      # @param function [String, Symbol] Postgres Advisory Lock function name to use
+      # @return [Boolean] whether the lock was acquired.
+      def advisory_lock_key(key, function: advisory_lockable_function)
+        query = if function.include? "_try_"
+                  <<~SQL.squish
+                    SELECT #{function}(('x'||substr(md5($1::text), 1, 16))::bit(64)::bigint) AS locked
+                  SQL
+                else
+                  <<~SQL.squish
+                    SELECT #{function}(('x'||substr(md5($1::text), 1, 16))::bit(64)::bigint)::text AS locked
+                  SQL
+                end
+
+        binds = [
+          ActiveRecord::Relation::QueryAttribute.new('key', key, ActiveRecord::Type::String.new),
+        ]
+        locked = connection.exec_query(pg_or_jdbc_query(query), 'GoodJob::Lockable Advisory Lock', binds).first['locked']
+        return locked unless block_given?
+        return nil unless locked
+
+        begin
+          yield
+        ensure
+          advisory_unlock_key(key, function: advisory_unlockable_function(function))
+        end
+      end
+
+      # Releases an advisory lock on this record if it is locked by this database
+      # session. Note that advisory locks stack, so you must call
+      # {#advisory_unlock} and {#advisory_lock} the same number of times.
+      # @param key [String, Symbol] Key to lock against
+      # @param function [String, Symbol] Postgres Advisory Lock function name to use
+      # @return [Boolean] whether the lock was released.
+      def advisory_unlock_key(key, function: advisory_unlockable_function)
+        query = <<~SQL.squish
+          SELECT #{function}(('x'||substr(md5($1::text), 1, 16))::bit(64)::bigint) AS unlocked
+        SQL
+        binds = [
+          ActiveRecord::Relation::QueryAttribute.new('key', key, ActiveRecord::Type::String.new),
+        ]
+        connection.exec_query(pg_or_jdbc_query(query), 'GoodJob::Lockable Advisory Unlock', binds).first['unlocked']
+      end
+
       def _advisory_lockable_column
-        column = advisory_lockable_column
-        column.respond_to?(:value) ? column.value : column
+        advisory_lockable_column || primary_key
       end
 
       def supports_cte_materialization_specifiers?
@@ -208,18 +253,7 @@ module GoodJob
     # @param function [String, Symbol] Postgres Advisory Lock function name to use
     # @return [Boolean] whether the lock was acquired.
     def advisory_lock(key: lockable_key, function: advisory_lockable_function)
-      query = if function.include? "_try_"
-                <<~SQL.squish
-                  SELECT #{function}(('x'||substr(md5($1::text), 1, 16))::bit(64)::bigint) AS locked
-                SQL
-              else
-                <<~SQL.squish
-                  SELECT #{function}(('x'||substr(md5($1::text), 1, 16))::bit(64)::bigint)::text AS locked
-                SQL
-              end
-
-      binds = [[nil, key]]
-      self.class.connection.exec_query(pg_or_jdbc_query(query), 'GoodJob::Lockable Advisory Lock', binds).first['locked']
+      self.class.advisory_lock_key(key, function: function)
     end
 
     # Releases an advisory lock on this record if it is locked by this database
@@ -229,11 +263,7 @@ module GoodJob
     # @param function [String, Symbol] Postgres Advisory Lock function name to use
     # @return [Boolean] whether the lock was released.
     def advisory_unlock(key: lockable_key, function: self.class.advisory_unlockable_function(advisory_lockable_function))
-      query = <<~SQL.squish
-        SELECT #{function}(('x'||substr(md5($1::text), 1, 16))::bit(64)::bigint) AS unlocked
-      SQL
-      binds = [[nil, key]]
-      self.class.connection.exec_query(pg_or_jdbc_query(query), 'GoodJob::Lockable Advisory Unlock', binds).first['unlocked']
+      self.class.advisory_unlock_key(key, function: function)
     end
 
     # Acquires an advisory lock on this record or raises
@@ -244,8 +274,7 @@ module GoodJob
     # @raise [RecordAlreadyAdvisoryLockedError]
     # @return [Boolean] +true+
     def advisory_lock!(key: lockable_key, function: advisory_lockable_function)
-      result = advisory_lock(key: key, function: function)
-      result || raise(RecordAlreadyAdvisoryLockedError)
+      self.class.advisory_lock_key(key, function: function) || raise(RecordAlreadyAdvisoryLockedError)
     end
 
     # Acquires an advisory lock on this record and safely releases it after the
@@ -265,9 +294,11 @@ module GoodJob
       raise ArgumentError, "Must provide a block" unless block_given?
 
       advisory_lock!(key: key, function: function)
-      yield
-    ensure
-      advisory_unlock(key: key, function: self.class.advisory_unlockable_function(function)) unless $ERROR_INFO.is_a? RecordAlreadyAdvisoryLockedError
+      begin
+        yield
+      ensure
+        advisory_unlock(key: key, function: self.class.advisory_unlockable_function(function))
+      end
     end
 
     # Tests whether this record has an advisory lock on it.
@@ -282,8 +313,18 @@ module GoodJob
           AND pg_locks.classid = ('x' || substr(md5($1::text), 1, 16))::bit(32)::int
           AND pg_locks.objid = (('x' || substr(md5($2::text), 1, 16))::bit(64) << 32)::bit(32)::int
       SQL
-      binds = [[nil, key], [nil, key]]
+      binds = [
+        ActiveRecord::Relation::QueryAttribute.new('key', key, ActiveRecord::Type::String.new),
+        ActiveRecord::Relation::QueryAttribute.new('key', key, ActiveRecord::Type::String.new),
+      ]
       self.class.connection.exec_query(pg_or_jdbc_query(query), 'GoodJob::Lockable Advisory Locked?', binds).any?
+    end
+
+    # Tests whether this record does not have an advisory lock on it.
+    # @param key [String, Symbol] Key to test lock against
+    # @return [Boolean]
+    def advisory_unlocked?(key: lockable_key)
+      !advisory_locked?(key: key)
     end
 
     # Tests whether this record is locked by the current database session.
@@ -299,7 +340,10 @@ module GoodJob
           AND pg_locks.objid = (('x' || substr(md5($2::text), 1, 16))::bit(64) << 32)::bit(32)::int
           AND pg_locks.pid = pg_backend_pid()
       SQL
-      binds = [[nil, key], [nil, key]]
+      binds = [
+        ActiveRecord::Relation::QueryAttribute.new('key', key, ActiveRecord::Type::String.new),
+        ActiveRecord::Relation::QueryAttribute.new('key', key, ActiveRecord::Type::String.new),
+      ]
       self.class.connection.exec_query(pg_or_jdbc_query(query), 'GoodJob::Lockable Owns Advisory Lock?', binds).any?
     end
 
@@ -315,7 +359,13 @@ module GoodJob
     # Default Advisory Lock key
     # @return [String]
     def lockable_key
-      [self.class.table_name, self[self.class._advisory_lockable_column]].join
+      lockable_column_key
+    end
+
+    # Default Advisory Lock key for column-based locking
+    # @return [String]
+    def lockable_column_key(column: self.class._advisory_lockable_column)
+      "#{self.class.table_name}-#{self[column]}"
     end
 
     delegate :pg_or_jdbc_query, to: :class
